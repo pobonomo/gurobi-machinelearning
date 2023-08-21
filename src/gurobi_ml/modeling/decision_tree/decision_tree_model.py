@@ -87,13 +87,12 @@ def leaf_formulation(
         # Non reachable nodes
         leafs_vars[~reachable, i].setAttr(GRB.Attr.UB, 0.0)
         # Leaf node:
-        rhs = output[reachable, :].tolist()
-        lhs = leafs_vars[reachable, i].tolist()
+        rhs = output[reachable, :]
+        lhs = leafs_vars[reachable, i].reshape(-1, 1)
         values = tree["value"][node, :]
         n_indicators = sum(reachable)
-        for l_var, r_vars in zip(lhs, rhs):
-            for r_var, value in zip(r_vars, values):
-                gp_model.addGenConstrIndicator(l_var, 1, r_var, GRB.EQUAL, value)
+        if reachable.any():
+            gp_model.addGenConstrIndicator(lhs, 1, rhs, GRB.EQUAL, values)
 
         for feature in range(n_features):
             feat_lb = node_lb[feature, node]
@@ -101,23 +100,21 @@ def leaf_formulation(
 
             if feat_lb > -GRB.INFINITY:
                 tight = (input_lb[:, feature] < feat_lb) & reachable
-                lhs = leafs_vars[tight, i].tolist()
-                rhs = _input[tight, feature].tolist()
-                n_indicators += sum(tight)
-                for l_var, r_var in zip(lhs, rhs):
+                if tight.any():
+                    lhs = leafs_vars[tight, i]
+                    rhs = _input[tight, feature]
+                    n_indicators += sum(tight)
                     gp_model.addGenConstrIndicator(
-                        l_var, 1, r_var, GRB.GREATER_EQUAL, feat_lb
+                        lhs, 1, rhs, GRB.GREATER_EQUAL, feat_lb
                     )
 
             if feat_ub < GRB.INFINITY:
                 tight = (input_ub[:, feature] > feat_ub) & reachable
-                lhs = leafs_vars[tight, i].tolist()
-                rhs = _input[tight, feature].tolist()
-                n_indicators += sum(tight)
-                for l_var, r_var in zip(lhs, rhs):
-                    gp_model.addGenConstrIndicator(
-                        l_var, 1, r_var, GRB.LESS_EQUAL, feat_ub
-                    )
+                if tight.any():
+                    lhs = leafs_vars[tight, i]
+                    rhs = _input[tight, feature]
+                    n_indicators += sum(tight)
+                    gp_model.addGenConstrIndicator(lhs, 1, rhs, GRB.LESS_EQUAL, feat_ub)
         if verbose:
             timer.timing(f"Added leaf {node} using {n_indicators} indicators")
 
