@@ -236,6 +236,30 @@ m.Params.BestObjStop = 0.0
 m.optimize()
 ```
 
+## Add bounds on layer output of layer 1
+
+This is for illustration purposes to show it can be done
+
+```{code-cell} ipython3
+# First look at the values of the output in layer 1
+pred_constr._layers[1].output.X
+```
+
+```{code-cell} ipython3
+# We bound it to 5 (arbitrarily)
+pred_constr._layers[1].output.UB = 5.0
+```
+
+```{code-cell} ipython3
+# Resolve the model
+m.optimize()
+```
+
+```{code-cell} ipython3
+# Look at the values of the output in layer 1 again
+pred_constr._layers[1].output.X
+```
+
 ## Results
 
 Normally, for the example and $\delta$ we chose, a counter example that gets the
