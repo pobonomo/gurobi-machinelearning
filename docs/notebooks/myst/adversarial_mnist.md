@@ -236,7 +236,7 @@ m.Params.BestObjStop = 0.0
 m.optimize()
 ```
 
-## Add bounds on layer output of layer 1
+## Add bounds on output of layer 1
 
 This is for illustration purposes to show it can be done
 
@@ -264,6 +264,13 @@ We can bound the output of each neurons of the layers by using gurobipy
 ```{code-cell} ipython3
 # We bound it to 5 (arbitrarily but the solution should change because some values are bigger)
 layer1.output.UB = 5.0
+```
+
+```{code-cell} ipython3
+# We can also set a lower bound on one particular neuron
+# note that output of a layer is always an 2-dimensional
+# matrix variable with the first dimension being 1
+layer1.output[0,4].LB = 0.1
 ```
 
 ```{code-cell} ipython3
