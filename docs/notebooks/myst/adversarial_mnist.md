@@ -5,7 +5,7 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
-    jupytext_version: 1.14.4
+    jupytext_version: 1.15.0
 kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
@@ -240,14 +240,30 @@ m.optimize()
 
 This is for illustration purposes to show it can be done
 
-```{code-cell} ipython3
-# First look at the values of the output in layer 1
-pred_constr._layers[1].output.X
-```
++++
+
+Layers are stored in pred_constr._layers
+Get the first one
 
 ```{code-cell} ipython3
-# We bound it to 5 (arbitrarily)
-pred_constr._layers[1].output.UB = 5.0
+layer1 = pred_constr._layers[1]
+```
+
+Each layer is a gurobi-ml modeling object with input variable and output variable
+
+Neurons are in the same order as in the input model
+
+We can inspect the values of the output variables for layer 1
+
+```{code-cell} ipython3
+layer1.output.X
+```
+
+We can bound the output of each neurons of the layers by using gurobipy
+
+```{code-cell} ipython3
+# We bound it to 5 (arbitrarily but the solution should change because some values are bigger)
+layer1.output.UB = 5.0
 ```
 
 ```{code-cell} ipython3
@@ -257,7 +273,7 @@ m.optimize()
 
 ```{code-cell} ipython3
 # Look at the values of the output in layer 1 again
-pred_constr._layers[1].output.X
+layer1.output.X
 ```
 
 ## Results
