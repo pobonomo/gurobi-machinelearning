@@ -18,11 +18,11 @@ from abc import ABC, abstractmethod
 import gurobipy as gp
 
 from ..exceptions import ParameterError
-from ._submodel import _SubModel
+from ._formulation import _Formulation
 from ._var_utils import _get_sol_values, validate_input_vars, validate_output_vars
 
 
-class AbstractPredictorConstr(ABC, _SubModel):
+class AbstractPredictorConstr(ABC, _Formulation):
     """Base class to store sub-model added by :py:func:`gurobi_ml.add_predictor_constr`.
 
     This class is the base class to store everything that is added to
@@ -41,7 +41,7 @@ class AbstractPredictorConstr(ABC, _SubModel):
     def __init__(self, gp_model, input_vars, output_vars=None, **kwargs):
         self._input = input_vars
         self._output = output_vars
-        _SubModel.__init__(self, gp_model, **kwargs)
+        _Formulation.__init__(self, gp_model, **kwargs)
 
     def _validate(self):
         """Validate input and output variables (check shapes, reshape if needed)."""
@@ -81,7 +81,7 @@ class AbstractPredictorConstr(ABC, _SubModel):
         self._input = input_vars
         self._output = output_vars
 
-    def _build_submodel(self, gp_model, *args, **kwargs):
+    def _build_formulation(self, gp_model, *args, **kwargs):
         """Predict output from input using predictor or transformer."""
         self._input, columns, index = validate_input_vars(self.gp_model, self._input)
         self._input_index = index
@@ -150,8 +150,8 @@ class AbstractPredictorConstr(ABC, _SubModel):
         return output
 
     def remove(self):
-        """Remove from gp_model everything that was added to embed predictor."""
-        _SubModel.remove(self)
+        """Remove from gp_model everything that was added to formulate predictor."""
+        _Formulation.remove(self)
 
     @property
     def _has_solution(self):

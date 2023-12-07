@@ -121,7 +121,7 @@ class BaseNNConstr(AbstractPredictorConstr):
         return layer
 
     def print_stats(self, abbrev=False, file=None):
-        """Print statistics about submodel created.
+        """Print statistics about formulation created.
 
         Parameters
         ----------

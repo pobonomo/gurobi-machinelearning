@@ -46,7 +46,7 @@ class AbstractNNLayer(AbstractPredictorConstr):
         assert False
 
     def print_stats(self, abbrev=False, file=None):
-        """Print statistics about submodel created.
+        """Print statistics about formulation created.
 
         Parameters
         ----------

@@ -13,33 +13,33 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Building Sub-models with gurobipy."""
+"""Building formulations with gurobipy."""
 
 from time import time
 
 
-class _SubModel:
-    """Base class for building and representing a MIP formulation embedded in a gurobipy.Model.
+class _Formulation:
+    """Base class for inserting a MIP formulation in a gurobipy.Model.
 
-    When instantiating this class, a (sub-)model is created in the provided
-    gurobipy.Model.  The instance represents the sub-model that was created,
+    When instantiating this class, a formulation is created in the provided
+    gurobipy.Model.  The instance represents the formulation that was created,
     and can be removed from it again.  Furthermore, additional information
-    about the submodel can be provided, depending on the sub-model creation.
+    about the formulation can be provided, depending on the child class implementation.
 
     There are two ways of using this class:
 
     1. To build a derived class to build a specific model.
 
-    For this, you must create a sub-class that defines the _build_submodel()
+    For this, you must create a sub-class that defines the _build_formulation()
     method, where you implement the code that builds the sub-model from
     the provided data in the gurobipy.Model.  The class should be implemented
     in the following way:
 
-    class MySubModel(_SubModel):
+    class MyFormulation(_Formulation):
         def __init__(self, model, ...., **kwargs):
             super().__init(self, model, ...., **kwargs)
 
-        def _build_submodel(self, model, ...., **kwargs):
+        def _build_formulation(self, model, ...., **kwargs):
             ...
 
     Here "...." can be your desired list of parameters, including possibly
@@ -54,7 +54,7 @@ class _SubModel:
 
     If you have a function that populates a gurobipy.Model with a sub-model
     from data, you can use this class directly to represent the created
-    submodel in the _SubModel instance.  The signature of such a modeling
+    formulation in the _Formulation instance.  The signature of such a modeling
     function must be:
 
     def my_modeling_function(model, ...., **kwargs):
@@ -64,9 +64,9 @@ class _SubModel:
     *args.
 
     To use your model building function, e.g. my_modeling_function, with this
-    class, simply pass it to the _SubModel constructor:
+    class, simply pass it to the _Formulation constructor:
 
-    my_sub_model = _SubModel(model, ....., model_function=my_modeling_function, ....)
+    my_sub_model = _Formulation(model, ....., model_function=my_modeling_function, ....)
 
     Independently of how you created your _SubModel instance, you can remove
     the sub-model from the gurobipy.Model by calling the remove method:
@@ -74,14 +74,14 @@ class _SubModel:
     my_sub_model.remove()
 
     You can always pass the named parameter name='my_name' to the constructors
-    of a submodel.  This name will be used to prefix the names of all the
-    modeling objects that are being created during submodel construction. If
+    of a formulation.  This name will be used to prefix the names of all the
+    modeling objects that are being created during formulation construction. If
     no name is provided an automatic name is generated from a default name.
     The default may be already specified as an attribute (mostly
     useful with sub-classing); if not, it is derived from the class name of
     your derived class, or the name of your model construction function.
     The only exception is the empty string name='' which is not used as a
-    prefix.  This is useful if the full model is built as a _SubModel.
+    prefix.  This is useful if the full model is built as a _Formulation.
 
     Note, that you can instantiate as many SubModels as needed in one
     gurobipy.Model.  In particular, you can instantiate SubModels from
@@ -121,7 +121,7 @@ class _SubModel:
         self.verbose = False
         if "verbose" in kwargs:
             self.verbose = kwargs["verbose"]
-            self._timer = _SubModel._ModelingTimer()
+            self._timer = _Formulation._ModelingTimer()
             print()
             self._timer.timing(f"Start building formulation for {self._default_name}")
 
@@ -137,7 +137,7 @@ class _SubModel:
         if self.verbose:
             self._timer.timing("Model statistics")
 
-        self._objects = self._build_submodel(gp_model, *args, **kwargs)
+        self._objects = self._build_formulation(gp_model, *args, **kwargs)
 
         if self.verbose:
             self._timer.timing("Built model")
@@ -150,10 +150,10 @@ class _SubModel:
         if self.verbose:
             print()
 
-    def _build_submodel(self, gp_model, *args, **kwargs):
-        """Method to be overridden for generating the model in a sub-class.
+    def _build_formulation(self, gp_model, *args, **kwargs):
+        """Method to be overridden for generating the formulation in a sub-class.
 
-        When using _SubModel to wrap a modeling function in a _SubModel, the default
+        When using _Formulation to wrap a modeling function in a _Formulation, the default
         implementation of this method simply calls the modeling function.
         """
         return self._model_function(gp_model, *args, **kwargs)
@@ -292,7 +292,7 @@ class _SubModel:
         try:
             modeling_data = gp_model._modeling_data
         except AttributeError:
-            modeling_data = _SubModel._ModelingData()
+            modeling_data = _Formulation._ModelingData()
         gp_model._modeling_data = modeling_data
 
         if self._no_recording:
@@ -313,7 +313,7 @@ class _SubModel:
             def __init__(self):
                 self.name = {}
 
-            def get_name(self, sub: _SubModel, name: str):
+            def get_name(self, sub: _Formulation, name: str):
                 """Return a default name for specified submodel sub."""
                 if name is None or name == "":
                     name = sub.default_name

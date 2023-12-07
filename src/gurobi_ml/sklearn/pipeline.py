@@ -80,7 +80,7 @@ class PipelineConstr(SKgetter, AbstractPredictorConstr):
             self, gp_model, input_vars, output_vars, validate_input=False, **kwargs
         )
 
-    def _build_submodel(self, gp_model, *args, **kwargs):
+    def _build_formulation(self, gp_model, *args, **kwargs):
         """Predict output from input using predictor or transformer.
 
         Pipelines are different from other objects because they can't validate

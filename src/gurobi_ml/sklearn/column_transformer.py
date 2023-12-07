@@ -47,7 +47,7 @@ class ColumnTransformerConstr(SKtransformer):
     # For this class we need to reimplement submodel because we don't want
     # to transform input variables to Gurobi variable. We can't do it for categorical
     # The input should be unchanged.
-    def _build_submodel(self, gp_model, *args, **kwargs):
+    def _build_formulation(self, gp_model, *args, **kwargs):
         """Predict output from input using predictor or transformer."""
         _input = self.input
         if hasattr(self._input, "columns"):
