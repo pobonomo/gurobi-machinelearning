@@ -1,9 +1,8 @@
-ipywidgets
 matplotlib
 notebook
 pandas
 seaborn
 keras
+tensorflow
 torch
 skorch
-../.

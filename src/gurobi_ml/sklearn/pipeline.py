@@ -104,6 +104,8 @@ class PipelineConstr(SKgetter, AbstractPredictorConstr):
         transformers["ColumnTransformer"] = add_column_transformer_constr
         kwargs["validate_input"] = True
 
+        kwargs.pop("validity_domain")
+
         for transformer in pipeline[:-1]:
             convertor = get_convertor(transformer, transformers)
             steps.append(convertor(gp_model, transformer, input_vars, **kwargs))

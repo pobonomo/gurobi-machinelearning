@@ -78,7 +78,6 @@ in a mathematical optimization model. There are three stages:
 import gurobipy as gp
 import gurobipy_pandas as gppd
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.compose import make_column_transformer
@@ -649,7 +648,9 @@ feats
 # to insert the constraints linking the features and the demand.
 #
 
-pred_constr = add_predictor_constr(m, lin_reg, feats, d)
+pred_constr = add_predictor_constr(
+    m, lin_reg, feats, d, validity_domain={"method": "box", "X": X, "y": y}
+)
 
 pred_constr.print_stats()
 

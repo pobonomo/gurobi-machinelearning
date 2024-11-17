@@ -207,7 +207,10 @@ m.update()
 # Change last layer activation to identity
 nn.out_activation_ = "identity"
 # Code to add the neural network to the constraints
-pred_constr = add_mlp_regressor_constr(m, nn, x, y)
+print(X.shape)
+pred_constr = add_mlp_regressor_constr(m, nn, x, y,
+                                   validity_domain={"method": "box",
+                                                    "X":X})
 
 # Restore activation
 nn.out_activation_ = "softmax"

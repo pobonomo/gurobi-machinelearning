@@ -15,6 +15,7 @@
 
 from abc import ABC, abstractmethod
 
+import numpy as np
 import gurobipy as gp
 
 from ._submodel import _SubModel
@@ -91,7 +92,39 @@ class AbstractPredictorConstr(ABC, _SubModel):
         self._input = input_vars
         self._output = output_vars
 
-    def _build_submodel(self, gp_model, *args, **kwargs):
+    def add_validity_domain(self, validity_domain=None, **kwargs):
+        if validity_domain is None:
+            return
+        try:
+            X = validity_domain["X"]
+        except KeyError:
+            X = None
+        try:
+            y = validity_domain["y"]
+        except KeyError:
+            y = None
+        try:
+            method = validity_domain["method"]
+        except KeyError:
+            return
+
+        if method is None or method == "none":
+            return
+
+        if method != "box":
+            raise NotImplementedError('validity domain {} not implemented')
+
+        print("Adding boxes")
+        if X is not None:
+            self.input.UB = np.minimum(self.input.UB, X.max(axis=0))
+            self.input.LB = np.maximum(self.input.LB, X.min(axis=0))
+            self.gp_model.update()
+
+        if y is not None:
+            self.output.UB = np.minimum(self.output.UB, y.max(axis=0))
+            self.output.LB = np.maximum(self.output.UB, y.min(axis=0))
+
+    def _build_submodel(self, gp_model, **kwargs):
         """Predict output from input using predictor or transformer."""
         self._input, columns, index = validate_input_vars(self.gp_model, self._input)
         self._input_index = index
@@ -104,6 +137,7 @@ class AbstractPredictorConstr(ABC, _SubModel):
             self._validate()
         self._mip_model(**kwargs)
         assert self._output is not None
+        self.add_validity_domain(**kwargs)
         return self
 
     def _print_container_steps(self, iterations_name, iterable, file):
