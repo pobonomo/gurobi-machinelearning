@@ -47,6 +47,9 @@ class ColumnTransformerConstr(SKtransformer):
         self._default_name = "col_trans"
         super().__init__(gp_model, column_transformer, input_vars, **kwargs)
 
+    def add_validity_domain(self, validity_domain=None, **kwargs):
+        raise NotImplemented("Validity domain not implemented for ColumnTransformer")
+
     # For this class we need to reimplement submodel because we don't want
     # to transform input variables to Gurobi variable. We can't do it for categorical
     # The input should be unchanged.

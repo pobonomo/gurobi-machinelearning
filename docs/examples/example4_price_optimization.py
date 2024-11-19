@@ -78,6 +78,7 @@ in a mathematical optimization model. There are three stages:
 import gurobipy as gp
 import gurobipy_pandas as gppd
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.compose import make_column_transformer
@@ -452,15 +453,9 @@ c_transport = pd.Series(
 c_transport = c_transport.loc[regions]
 # the cost of transporting an avocado
 
-# Get the lower and upper bounds from the dataset for the price and the number of products to be stocked
-a_min = 0  # minimum avocado price in each region
-a_max = 2  # maximum avocado price in each region
-
 data = pd.concat(
     [
         c_transport,
-        df.groupby("region")["units_sold"].min().rename("min_delivery"),
-        df.groupby("region")["units_sold"].max().rename("max_delivery"),
     ],
     axis=1,
 )
@@ -495,8 +490,8 @@ data
 
 m = gp.Model("Avocado_Price_Allocation")
 
-p = gppd.add_vars(m, data, name="price", lb=a_min, ub=a_max)
-x = gppd.add_vars(m, data, name="x", lb="min_delivery", ub="max_delivery")
+p = gppd.add_vars(m, data, name="price")
+x = gppd.add_vars(m, data, name="x")
 s = gppd.add_vars(
     m, data, name="s"
 )  # predicted amount of sales in each region for the given price).

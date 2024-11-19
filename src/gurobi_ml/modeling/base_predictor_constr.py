@@ -15,8 +15,8 @@
 
 from abc import ABC, abstractmethod
 
-import numpy as np
 import gurobipy as gp
+import numpy as np
 
 from ._submodel import _SubModel
 from ._var_utils import _get_sol_values, validate_input_vars, validate_output_vars
@@ -112,9 +112,8 @@ class AbstractPredictorConstr(ABC, _SubModel):
             return
 
         if method != "box":
-            raise NotImplementedError('validity domain {} not implemented')
+            raise NotImplementedError("validity domain {} not implemented")
 
-        print("Adding boxes")
         if X is not None:
             self.input.UB = np.minimum(self.input.UB, X.max(axis=0))
             self.input.LB = np.maximum(self.input.LB, X.min(axis=0))
@@ -122,7 +121,7 @@ class AbstractPredictorConstr(ABC, _SubModel):
 
         if y is not None:
             self.output.UB = np.minimum(self.output.UB, y.max(axis=0))
-            self.output.LB = np.maximum(self.output.UB, y.min(axis=0))
+            self.output.LB = np.maximum(self.output.LB, y.min(axis=0))
 
     def _build_submodel(self, gp_model, **kwargs):
         """Predict output from input using predictor or transformer."""

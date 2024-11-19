@@ -104,7 +104,7 @@ class MLPRegressorConstr(SKgetter, BaseNNConstr):
         input_vars = self._input
         output = None
 
-        kwargs.pop("validity_domain")
+        kwargs.pop("validity_domain", None)
 
         for i in range(neural_net.n_layers_ - 1):
             layer_coefs = neural_net.coefs_[i]

@@ -17,6 +17,10 @@
 in a :external+gurobi:py:class:`Model`.
 """
 
+import gurobipy as gp
+
+from gurobi_ml.exceptions import ParameterError
+
 from ..lightgbm_sklearn_api import lightgbm_sklearn_convertors
 from ..modeling.base_predictor_constr import AbstractPredictorConstr
 from ..modeling.get_convertor import get_convertor
@@ -86,12 +90,48 @@ class PipelineConstr(SKgetter, AbstractPredictorConstr):
         their input and output. They are just containers of other objects that will
         do it.
         """
+        validity_domain = kwargs.pop("validity_domain", None)
         self._mip_model(**kwargs)
         assert self.output is not None
         assert self.input is not None
         # We can call validate only after the model is created
         self._validate()
+        self.add_validity_domain(validity_domain, **kwargs)
         return self
+
+    def add_validity_domain(self, validity_domain=None, **kwargs):
+        if validity_domain is None:
+            return
+        try:
+            X = validity_domain["X"]
+        except KeyError:
+            X = None
+        try:
+            y = validity_domain["y"]
+        except KeyError:
+            y = None
+        try:
+            method = validity_domain["method"]
+        except KeyError:
+            return
+
+        if method is None or method == "none":
+            return
+
+        if method != "box":
+            raise NotImplementedError("validity domain {} not implemented")
+
+        if X is not None:
+            for step in self._steps:
+                if isinstance(step.input, gp.MVar):
+                    step.add_validity_domain({"X": X, "method": method})
+                    break
+                X = step.transformer.transform(X)
+            else:
+                raise ParameterError("No variables in pipeline?")
+
+        if y is not None:
+            self._steps[-1].add_validity_domain({"y": y, "method": method})
 
     def _mip_model(self, **kwargs):
         pipeline = self.predictor
@@ -104,7 +144,7 @@ class PipelineConstr(SKgetter, AbstractPredictorConstr):
         transformers["ColumnTransformer"] = add_column_transformer_constr
         kwargs["validate_input"] = True
 
-        kwargs.pop("validity_domain")
+        assert "validity_domain" not in kwargs
 
         for transformer in pipeline[:-1]:
             convertor = get_convertor(transformer, transformers)
