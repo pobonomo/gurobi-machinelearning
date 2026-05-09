@@ -128,6 +128,9 @@ class GradientBoostingRegressorConstr(SKgetter, AbstractPredictorConstr):
             "Output dimension of gradient boosting regressor should be 1"
         )
 
+        if self._no_debug:
+            kwargs["no_record"] = True
+
         if self.formulation in ("misic", "vidal"):
             trees = []
             for i in range(predictor.n_estimators_):

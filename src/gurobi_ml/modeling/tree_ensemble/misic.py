@@ -88,19 +88,17 @@ class MisicTreeEnsemble(AbstractPredictorConstr):
                 out_val = self.predictor.predict(in_val)
                 r_val = np.abs(out_val.reshape(-1, 1) - self.output.X)
                 return r_val
-            # Fallback or simplified error check could be implemented here
             return np.zeros(self.output.shape)
         raise NoSolutionError()
 
     def _mip_model(self, **kwargs):
-
         model = self.gp_model
         _input = self.input
         output = self.output
         nex = _input.shape[0]
         n_features = self.trees[0]["n_features"]
 
-        # 1. Extract unique thresholds per feature with optional clamping
+        # 1. Extract unique thresholds and pre-calculate offsets
         unique_thresholds = [set() for _ in range(n_features)]
         for tree in self.trees:
             not_leafs = tree["children_left"] >= 0
@@ -112,49 +110,55 @@ class MisicTreeEnsemble(AbstractPredictorConstr):
                 unique_thresholds[f].add(v)
 
         sorted_thresholds = [sorted(list(s)) for s in unique_thresholds]
+        n_splits_per_feat = np.array([len(s) for s in sorted_thresholds])
+        total_splits = np.sum(n_splits_per_feat)
+        split_offsets = np.cumsum(np.concatenate(([0], n_splits_per_feat)))
+        threshold_to_idx = [
+            {val: k for k, val in enumerate(thresholds)}
+            for thresholds in sorted_thresholds
+        ]
 
-        # 2. Create shared binary variables z[j, k] = 1 iff x[j] <= threshold[j, k]
-        z_vars = []
-        for j, thresholds in enumerate(sorted_thresholds):
-            if len(thresholds) > 0:
-                z_j = model.addMVar(
-                    (nex, len(thresholds)),
-                    vtype=GRB.BINARY,
-                    name=self._name_var(f"z_f{j}"),
-                )
-                z_vars.append(z_j)
-                if len(thresholds) > 1:
-                    model.addConstr(z_j[:, :-1] <= z_j[:, 1:])
-            else:
-                z_vars.append(None)
+        # 2. Shared binaries Z: (nex, total_splits)
+        if total_splits > 0:
+            z_vars = model.addMVar(
+                (nex, total_splits), vtype=GRB.BINARY, name=self._name_var("z")
+            )
+            for j in range(n_features):
+                if n_splits_per_feat[j] > 1:
+                    off = split_offsets[j]
+                    model.addConstr(
+                        z_vars[:, off : off + n_splits_per_feat[j] - 1]
+                        <= z_vars[:, off + 1 : off + n_splits_per_feat[j]]
+                    )
+        else:
+            z_vars = None
 
         # 3. Link input variables x[j] to shared binaries z[j, k]
-        # We use Big-M formulation if bounds are available, otherwise indicators
         input_lb = _input.getAttr(GRB.Attr.LB)
         input_ub = _input.getAttr(GRB.Attr.UB)
 
-        for j, thresholds in enumerate(sorted_thresholds):
-            if len(thresholds) == 0:
+        for j in range(n_features):
+            thresholds = sorted_thresholds[j]
+            if not thresholds:
                 continue
-            z_j = z_vars[j]
+            
+            off = split_offsets[j]
+            z_j = z_vars[:, off : off + len(thresholds)]
             x_j = _input[:, j]
 
             lb_j = input_lb[:, j]
             ub_j = input_ub[:, j]
+            vals = np.array(thresholds)
 
-            for k, val in enumerate(thresholds):
-                # Big-M linking if possible
-                if np.all(lb_j > -GRB.INFINITY) and np.all(ub_j < GRB.INFINITY):
-                    # z[j, k] = 1 -> x[j] <= val
-                    model.addConstr(x_j <= val + (ub_j - val) * (1 - z_j[:, k]))
-                    # z[j, k] = 0 -> x[j] >= val + epsilon
-                    # x[j] >= val + epsilon - (val + epsilon - lb_j) * z_j[:, k]
-                    model.addConstr(
-                        x_j
-                        >= val + self.epsilon - (val + self.epsilon - lb_j) * z_j[:, k]
-                    )
-                else:
-                    # Fallback to indicators
+            if np.all(lb_j > -GRB.INFINITY) and np.all(ub_j < GRB.INFINITY):
+                model.addConstr(
+                    x_j[:, np.newaxis] <= vals + (ub_j[:, np.newaxis] - vals) * (1 - z_j)
+                )
+                model.addConstr(
+                    x_j[:, np.newaxis] >= vals + self.epsilon - (vals + self.epsilon - lb_j[:, np.newaxis]) * z_j
+                )
+            else:
+                for k, val in enumerate(thresholds):
                     for i in range(nex):
                         model.addGenConstrIndicator(
                             z_j[i, k], 1, x_j[i], GRB.LESS_EQUAL, val
@@ -163,26 +167,38 @@ class MisicTreeEnsemble(AbstractPredictorConstr):
                             z_j[i, k], 0, x_j[i], GRB.GREATER_EQUAL, val + self.epsilon
                         )
 
-        # 4. Model each tree using shared binaries
-        tree_outputs = []
+        # 4. Model all trees using shared binaries
+        tree_leaf_counts = np.array([
+            len(np.where(tree["children_left"] < 0)[0]) for tree in self.trees
+        ])
+        total_leaves = np.sum(tree_leaf_counts)
+        leaf_offsets = np.cumsum(np.concatenate(([0], tree_leaf_counts)))
+
+        y_leaf = model.addMVar(
+            (nex, total_leaves), vtype=GRB.BINARY, name=""
+        )
+
+        for t in range(len(self.trees)):
+            off = leaf_offsets[t]
+            model.addConstr(y_leaf[:, off : off + tree_leaf_counts[t]].sum(axis=1) == 1)
+
+        # Collect path constraints for vectorization
+        all_l_left = []
+        all_z_left = []
+        all_l_right = []
+        all_z_right = []
+
         for t, tree in enumerate(self.trees):
+            off = leaf_offsets[t]
             children_left = tree["children_left"]
             children_right = tree["children_right"]
             features = tree["feature"]
             tree_thresholds = tree["threshold"]
-            values = tree["value"]
 
             leaf_indices = np.where(children_left < 0)[0]
-            y_t = model.addMVar(
-                (nex, len(leaf_indices)),
-                vtype=GRB.BINARY,
-                name=self._name_var(f"y_t{t}"),
-            )
-            model.addConstr(y_t.sum(axis=1) == 1)
-            leaf_map = {idx: i for i, idx in enumerate(leaf_indices)}
+            leaf_map = {node_idx: i for i, node_idx in enumerate(leaf_indices)}
 
-            # Traverse tree to build path constraints
-            stack = [(0, [])] # (node, list of (z_jk, sense)) where sense is 1 for left, 0 for right
+            stack = [(0, [])]
             while stack:
                 u, path = stack.pop()
                 left = children_left[u]
@@ -190,25 +206,37 @@ class MisicTreeEnsemble(AbstractPredictorConstr):
                     right = children_right[u]
                     feat = features[u]
                     thresh = tree_thresholds[u]
-                    # Need to account for clamping in lookup
                     if 0 < abs(thresh) < self.safety_floor:
                         thresh = np.sign(thresh) * self.safety_floor
-                    
-                    k = sorted_thresholds[feat].index(thresh)
-                    z_jk = z_vars[feat][:, k]
+                    k = threshold_to_idx[feat][thresh]
+                    z_idx = split_offsets[feat] + k
 
-                    stack.append((right, path + [(z_jk, 0)]))
-                    stack.append((left, path + [(z_jk, 1)]))
+                    stack.append((right, path + [(z_idx, 0)]))
+                    stack.append((left, path + [(z_idx, 1)]))
                 else:
-                    l_idx = leaf_map[u]
-                    y_ti_l = y_t[:, l_idx]
-                    for z_jk, sense in path:
-                        if sense == 1: # Left: x <= thresh => z_jk = 1
-                            model.addConstr(y_ti_l <= z_jk)
-                        else: # Right: x > thresh => z_jk = 0
-                            model.addConstr(y_ti_l <= 1 - z_jk)
+                    l_idx = off + leaf_map[u]
+                    for z_idx, sense in path:
+                        if sense == 1:
+                            all_l_left.append(l_idx)
+                            all_z_left.append(z_idx)
+                        else:
+                            all_l_right.append(l_idx)
+                            all_z_right.append(z_idx)
 
-            tree_outputs.append(y_t @ values[leaf_indices, :])
+        # Vectorized addition of path constraints
+        if all_l_left:
+            model.addConstr(y_leaf[:, all_l_left] <= z_vars[:, all_z_left])
+        if all_l_right:
+            model.addConstr(y_leaf[:, all_l_right] <= 1 - z_vars[:, all_z_right])
+
+        # 5. Output calculation
+        tree_outputs = []
+        for t, tree in enumerate(self.trees):
+            off = leaf_offsets[t]
+            leaf_indices = np.where(tree["children_left"] < 0)[0]
+            values = tree["value"]
+            tree_outputs.append(
+                y_leaf[:, off : off + tree_leaf_counts[t]] @ values[leaf_indices, :]
+            )
 
         model.addConstr(output == sum(tree_outputs))
-

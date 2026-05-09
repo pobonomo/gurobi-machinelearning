@@ -122,6 +122,9 @@ class RandomForestRegressorConstr(SKgetter, AbstractPredictorConstr):
         output = self._output
         nex = _input.shape[0]
 
+        if self._no_debug:
+            kwargs["no_record"] = True
+
         if self.formulation in ("misic", "vidal"):
             trees = []
             for i in range(predictor.n_estimators):

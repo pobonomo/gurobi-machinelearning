@@ -99,7 +99,7 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
         nex = _input.shape[0]
         n_features = self.trees[0]["n_features"]
 
-        # 1. Extract unique thresholds per feature
+        # 1. Extract unique thresholds and pre-calculate offsets
         unique_thresholds = [set() for _ in range(n_features)]
         for tree in self.trees:
             not_leafs = tree["children_left"] >= 0
@@ -111,41 +111,58 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
                 unique_thresholds[f].add(v)
 
         sorted_thresholds = [sorted(list(s)) for s in unique_thresholds]
+        n_splits_per_feat = np.array([len(s) for s in sorted_thresholds])
+        total_splits = np.sum(n_splits_per_feat)
+        split_offsets = np.cumsum(np.concatenate(([0], n_splits_per_feat)))
+        
+        # Build a fast mapping for thresholds
+        threshold_to_idx = [
+            {val: k for k, val in enumerate(thresholds)}
+            for thresholds in sorted_thresholds
+        ]
 
-        # 2. Shared binary variables z[j, k] = 1 iff x[j] <= threshold[j, k]
-        z_vars = []
-        for j, thresholds in enumerate(sorted_thresholds):
-            if len(thresholds) > 0:
-                z_j = model.addMVar(
-                    (nex, len(thresholds)),
-                    vtype=GRB.BINARY,
-                    name=self._name_var(f"z_f{j}"),
-                )
-                z_vars.append(z_j)
-                if len(thresholds) > 1:
-                    model.addConstr(z_j[:, :-1] <= z_j[:, 1:])
-            else:
-                z_vars.append(None)
+        # 2. Shared binaries Z: (nex, total_splits)
+        if total_splits > 0:
+            z_vars = model.addMVar(
+                (nex, total_splits), vtype=GRB.BINARY, name=self._name_var("z")
+            )
+            # Monotonicity: z_j,k <= z_j,k+1
+            for j in range(n_features):
+                if n_splits_per_feat[j] > 1:
+                    off = split_offsets[j]
+                    model.addConstr(
+                        z_vars[:, off : off + n_splits_per_feat[j] - 1]
+                        <= z_vars[:, off + 1 : off + n_splits_per_feat[j]]
+                    )
+        else:
+            z_vars = None
 
         # 3. Link input variables x[j] to shared binaries z[j, k]
         input_lb = _input.getAttr(GRB.Attr.LB)
         input_ub = _input.getAttr(GRB.Attr.UB)
 
-        for j, thresholds in enumerate(sorted_thresholds):
-            if len(thresholds) == 0:
+        for j in range(n_features):
+            thresholds = sorted_thresholds[j]
+            if not thresholds:
                 continue
-            z_j = z_vars[j]
+            
+            off = split_offsets[j]
+            z_j = z_vars[:, off : off + len(thresholds)]
             x_j = _input[:, j]
+
             lb_j = input_lb[:, j]
             ub_j = input_ub[:, j]
+            vals = np.array(thresholds)
 
-            for k, val in enumerate(thresholds):
-                if np.all(lb_j > -GRB.INFINITY) and np.all(ub_j < GRB.INFINITY):
-                    model.addConstr(x_j <= val + (ub_j - val) * (1 - z_j[:, k]))
-                    model.addConstr(
-                        x_j >= val + self.epsilon - (val + self.epsilon - lb_j) * z_j[:, k]
-                    )
-                else:
+            if np.all(lb_j > -GRB.INFINITY) and np.all(ub_j < GRB.INFINITY):
+                model.addConstr(
+                    x_j[:, np.newaxis] <= vals + (ub_j[:, np.newaxis] - vals) * (1 - z_j)
+                )
+                model.addConstr(
+                    x_j[:, np.newaxis] >= vals + self.epsilon - (vals + self.epsilon - lb_j[:, np.newaxis]) * z_j
+                )
+            else:
+                for k, val in enumerate(thresholds):
                     for i in range(nex):
                         model.addGenConstrIndicator(
                             z_j[i, k], 1, x_j[i], GRB.LESS_EQUAL, val
@@ -154,49 +171,72 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
                             z_j[i, k], 0, x_j[i], GRB.GREATER_EQUAL, val + self.epsilon
                         )
 
-        # 4. Model each tree using flow formulation
+        # 4. Model all trees using flow formulation
+        tree_node_counts = np.array([len(tree["children_left"]) for tree in self.trees])
+        total_nodes = np.sum(tree_node_counts)
+        node_offsets = np.cumsum(np.concatenate(([0], tree_node_counts)))
+
+        y_node = model.addMVar(
+            (nex, total_nodes), lb=0.0, ub=1.0, name=""
+        )
+
+        # Root flow = 1
+        model.addConstr(y_node[:, node_offsets[:-1]] == 1.0)
+
+        # Vectorized data collection
+        all_children_left = np.concatenate([t["children_left"] for t in self.trees])
+        all_children_right = np.concatenate([t["children_right"] for t in self.trees])
+        all_features = np.concatenate([t["feature"] for t in self.trees])
+        all_thresholds = np.concatenate([t["threshold"] for t in self.trees])
+        
+        # Adjust thresholds for safety floor
+        mask = (np.abs(all_thresholds) > 0) & (np.abs(all_thresholds) < self.safety_floor)
+        all_thresholds[mask] = np.sign(all_thresholds[mask]) * self.safety_floor
+        
+        is_internal = all_children_left >= 0
+        internal_indices = np.where(is_internal)[0]
+        
+        if len(internal_indices) > 0:
+            # Tree-specific offsets for nodes
+            tree_ids = np.repeat(np.arange(len(self.trees)), tree_node_counts)
+            node_offsets_expanded = node_offsets[tree_ids]
+            
+            all_internal = internal_indices
+            all_lefts = all_children_left[internal_indices] + node_offsets_expanded[internal_indices]
+            all_rights = all_children_right[internal_indices] + node_offsets_expanded[internal_indices]
+            
+            # Map features and thresholds to shared binary indices
+            feats = all_features[internal_indices]
+            threshs = all_thresholds[internal_indices]
+            
+            # This part still needs a loop or a smarter map if possible, 
+            # but it's only over total splits which is manageable.
+            all_z_indices = np.zeros(len(internal_indices), dtype=int)
+            for i, (f, v) in enumerate(zip(feats, threshs)):
+                all_z_indices[i] = split_offsets[f] + threshold_to_idx[f][v]
+            
+            # Flow conservation: y_u = y_l + y_r
+            model.addConstr(
+                y_node[:, all_internal] == y_node[:, all_lefts] + y_node[:, all_rights]
+            )
+            # Binary linking: y_l <= z_jk, y_r <= 1 - z_jk
+            z_linked = z_vars[:, all_z_indices]
+            model.addConstr(y_node[:, all_lefts] <= z_linked)
+            model.addConstr(y_node[:, all_rights] <= 1 - z_linked)
+
+        # 5. Output calculation (Vectorized across trees)
+        is_leaf = all_children_left < 0
+        leaf_indices = np.where(is_leaf)[0]
+        
+        # We can't easily vectorize the whole sum if leaf values are different 
+        # shapes but here they should be consistent.
+        # Actually, let's keep the per-tree loop for the final output sum 
+        # to handle potential multi-output or different tree values.
         tree_outputs = []
         for t, tree in enumerate(self.trees):
-            children_left = tree["children_left"]
-            children_right = tree["children_right"]
-            features = tree["feature"]
-            tree_thresholds = tree["threshold"]
+            off = node_offsets[t]
+            t_leafs = np.where(tree["children_left"] < 0)[0]
             values = tree["value"]
-
-            n_nodes = len(children_left)
-            # Flow through each node. Roots have flow 1.
-            # Variables are continuous, integrality is forced by binaries z_jk.
-            y_node = model.addMVar(
-                (nex, n_nodes),
-                lb=0.0,
-                ub=1.0,
-                name=self._name_var(f"y_t{t}_n"),
-            )
-            model.addConstr(y_node[:, 0] == 1.0)
-
-            for u in range(n_nodes):
-                left = children_left[u]
-                if left >= 0:
-                    right = children_right[u]
-                    feat = features[u]
-                    thresh = tree_thresholds[u]
-
-                    if 0 < abs(thresh) < self.safety_floor:
-                        thresh = np.sign(thresh) * self.safety_floor
-                    k = sorted_thresholds[feat].index(thresh)
-                    z_jk = z_vars[feat][:, k]
-
-                    y_u = y_node[:, u]
-                    y_l = y_node[:, left]
-                    y_r = y_node[:, right]
-
-                    # Flow conservation
-                    model.addConstr(y_u == y_l + y_r)
-                    # Linking to binaries
-                    model.addConstr(y_l <= z_jk)
-                    model.addConstr(y_r <= 1 - z_jk)
-
-            leaf_indices = np.where(children_left < 0)[0]
-            tree_outputs.append(y_node[:, leaf_indices] @ values[leaf_indices, :])
+            tree_outputs.append(y_node[:, off + t_leafs] @ values[t_leafs, :])
 
         model.addConstr(output == sum(tree_outputs))

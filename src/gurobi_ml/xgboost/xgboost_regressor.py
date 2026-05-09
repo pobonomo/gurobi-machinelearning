@@ -227,6 +227,9 @@ class XGBoostRegressorConstr(AbstractPredictorConstr):
             )
         trees = xgb_raw["learner"]["gradient_booster"]["model"]["trees"]
 
+        if self._no_debug:
+            kwargs["no_record"] = True
+
         if self.formulation in ("misic", "vidal"):
             misic_trees = []
             for i, tree in enumerate(trees):

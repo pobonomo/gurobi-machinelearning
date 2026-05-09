@@ -298,6 +298,9 @@ class LGBMConstr(AbstractPredictorConstr):
 
         trees_raw = lgbm_raw["tree_info"]
 
+        if self._no_debug:
+            kwargs["no_record"] = True
+
         if self.formulation in ("misic", "vidal"):
             trees = []
             for tree_raw in trees_raw:
