@@ -12,6 +12,3 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
-from .decision_tree_model import AbstractTreeEstimator as AbstractTreeEstimator
-from ..tree_ensemble.misic import MisicTreeEnsemble as MisicTreeEnsemble

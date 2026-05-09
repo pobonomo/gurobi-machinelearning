@@ -35,10 +35,17 @@ except ImportError:
 from ..exceptions import ModelConfigurationError, NoSolutionError
 from ..modeling import AbstractPredictorConstr
 from ..modeling.decision_tree import AbstractTreeEstimator
+from ..modeling.tree_ensemble.misic import MisicTreeEnsemble
 
 
 def add_xgbregressor_constr(
-    gp_model, xgboost_regressor, input_vars, output_vars=None, epsilon=0.0, **kwargs
+    gp_model,
+    xgboost_regressor,
+    input_vars,
+    output_vars=None,
+    epsilon=0.0,
+    formulation="leaf",
+    **kwargs,
 ):
     """Formulate xgboost_regressor into gp_model.
 
@@ -59,6 +66,14 @@ def add_xgbregressor_constr(
         Decision variables used as input for gradient boosting regressor in model.
     output_vars : mvar_array_like, optional
         Decision variables used as output for gradient boosting regressor in model.
+    epsilon : float, optional
+        A small value to distinguish between <= and > splits.
+    formulation : str, optional
+        The formulation to use. One of "leaf" or "misic". Default is "leaf".
+    safety_floor : float, optional
+        Thresholds with absolute value smaller than this will be clamped
+        to this value to avoid numerical issues with Gurobi's tolerance.
+        Only used if formulation is "misic".
 
     Returns
     -------
@@ -85,12 +100,19 @@ def add_xgbregressor_constr(
         input_vars,
         output_vars,
         epsilon=epsilon,
+        formulation=formulation,
         **kwargs,
     )
 
 
 def add_xgboost_regressor_constr(
-    gp_model, xgboost_regressor, input_vars, output_vars=None, epsilon=0.0, **kwargs
+    gp_model,
+    xgboost_regressor,
+    input_vars,
+    output_vars=None,
+    epsilon=0.0,
+    formulation="leaf",
+    **kwargs,
 ):
     """Formulate xgboost_regressor into gp_model.
 
@@ -110,6 +132,14 @@ def add_xgboost_regressor_constr(
         Decision variables used as input for gradient boosting regressor in model.
     output_vars : mvar_array_like, optional
         Decision variables used as output for gradient boosting regressor in model.
+    epsilon : float, optional
+        A small value to distinguish between <= and > splits.
+    formulation : str, optional
+        The formulation to use. One of "leaf" or "misic". Default is "leaf".
+    safety_floor : float, optional
+        Thresholds with absolute value smaller than this will be clamped
+        to this value to avoid numerical issues with Gurobi's tolerance.
+        Only used if formulation is "misic".
 
     Returns
     -------
@@ -131,7 +161,13 @@ def add_xgboost_regressor_constr(
         If the booster is not of type "gbtree".
     """
     return XGBoostRegressorConstr(
-        gp_model, xgboost_regressor, input_vars, output_vars, epsilon=epsilon, **kwargs
+        gp_model,
+        xgboost_regressor,
+        input_vars,
+        output_vars,
+        epsilon=epsilon,
+        formulation=formulation,
+        **kwargs,
     )
 
 
@@ -143,13 +179,23 @@ class XGBoostRegressorConstr(AbstractPredictorConstr):
     """
 
     def __init__(
-        self, gp_model, xgb_regressor, input_vars, output_vars, epsilon=0.0, **kwargs
+        self,
+        gp_model,
+        xgb_regressor,
+        input_vars,
+        output_vars,
+        epsilon=0.0,
+        formulation="leaf",
+        safety_floor=0.0,
+        **kwargs,
     ):
         self._output_shape = 1
         self.estimators_ = []
         self.xgb_regressor = xgb_regressor
         self._default_name = "xgb_reg"
         self.epsilon = epsilon
+        self.formulation = formulation
+        self.safety_floor = safety_floor
         AbstractPredictorConstr.__init__(
             self, gp_model, input_vars, output_vars, **kwargs
         )
@@ -179,6 +225,79 @@ class XGBoostRegressorConstr(AbstractPredictorConstr):
                 xgb_regressor, f"model not implemented for {booster_type}"
             )
         trees = xgb_raw["learner"]["gradient_booster"]["model"]["trees"]
+
+        if self.formulation == "misic":
+            misic_trees = []
+            for i, tree in enumerate(trees):
+                tree["threshold"] = (
+                    np.array(tree["split_conditions"], dtype=np.float32) - self.epsilon
+                )
+                tree["children_left"] = np.array(tree["left_children"])
+                tree["children_right"] = np.array(tree["right_children"])
+                tree["feature"] = np.array(tree["split_indices"])
+                tree["value"] = tree["threshold"].reshape(-1, 1)
+                tree["capacity"] = len(tree["split_conditions"])
+                tree["n_features"] = int(tree["tree_param"]["num_feature"])
+                misic_trees.append(tree)
+
+            sum_trees = model.addMVar(
+                output.shape, lb=-GRB.INFINITY, name=self._name_var("sum_trees")
+            )
+            self.estimators_ = [
+                MisicTreeEnsemble(
+                    model,
+                    misic_trees,
+                    _input,
+                    sum_trees,
+                    epsilon=self.epsilon,
+                    safety_floor=self.safety_floor,
+                    predictor=xgb_regressor,
+                    **kwargs,
+                )
+            ]
+            # Assembly logic (copied/adapted from below)
+            base_score_raw = xgb_raw["learner"]["learner_model_param"]["base_score"]
+            if isinstance(base_score_raw, str):
+                if base_score_raw.startswith("["):
+                    import ast
+
+                    constant = float(ast.literal_eval(base_score_raw)[0])
+                else:
+                    constant = float(base_score_raw)
+            else:
+                constant = float(base_score_raw)
+            learning_rate = 1.0
+            objective = xgb_raw["learner"]["objective"]["name"]
+
+            if objective in ("reg:logistic", "binary:logistic"):
+                if gp.gurobi.version()[0] < 11:
+                    raise ModelConfigurationError(
+                        xgb_regressor,
+                        f"Option objective:{objective} only supported with Gurobi >= 11",
+                    )
+                if HAS_NLFUNC:
+                    model.addConstr(output == nlfunc.logistic(learning_rate * sum_trees))
+                else:
+                    affinevar = model.addMVar(output.shape, lb=-float("infinity"))
+                    model.addConstr(affinevar == learning_rate * sum_trees)
+                    for index in np.ndindex(self.output.shape):
+                        self.gp_model.addGenConstrLogistic(
+                            affinevar[index],
+                            output[index],
+                            name=self._indexed_name(index, "logistic"),
+                        )
+                    self.gp_model.update()
+                    num_gc = self.gp_model.NumGenConstrs
+                    for gen_constr in self.gp_model.getGenConstrs()[num_gc:]:
+                        gen_constr.setAttr("FuncNonLinear", 1)
+            elif objective == "reg:squarederror":
+                model.addConstr(output == learning_rate * sum_trees + constant)
+            else:
+                raise ModelConfigurationError(
+                    xgb_regressor, f"objective type '{objective}' not implemented"
+                )
+            return
+
         n_estimators = len(trees)
 
         estimators = []

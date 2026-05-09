@@ -21,12 +21,18 @@ into a :external+gurobi:py:class:`Model`.
 from gurobipy import GRB
 
 from ..modeling import AbstractPredictorConstr
+from ..modeling.tree_ensemble.misic import MisicTreeEnsemble
 from .decision_tree_regressor import add_decision_tree_regressor_constr
 from .skgetter import SKgetter
 
 
 def add_gradient_boosting_regressor_constr(
-    gp_model, gradient_boosting_regressor, input_vars, output_vars=None, **kwargs
+    gp_model,
+    gradient_boosting_regressor,
+    input_vars,
+    output_vars=None,
+    formulation="leaf",
+    **kwargs,
 ):
     """Formulate gradient_boosting_regressor into gp_model.
 
@@ -44,6 +50,12 @@ def add_gradient_boosting_regressor_constr(
         Decision variables used as input for gradient boosting regressor in model.
     output_vars : mvar_array_like, optional
         Decision variables used as output for gradient boosting regressor in model.
+    formulation : str, optional
+        The formulation to use. One of "leaf" or "misic". Default is "leaf".
+    safety_floor : float, optional
+        Thresholds with absolute value smaller than this will be clamped
+        to this value to avoid numerical issues with Gurobi's tolerance.
+        Only used if formulation is "misic".
 
     Returns
     -------
@@ -60,7 +72,12 @@ def add_gradient_boosting_regressor_constr(
     for specific parameters to model decision tree estimators.
     """
     return GradientBoostingRegressorConstr(
-        gp_model, gradient_boosting_regressor, input_vars, output_vars, **kwargs
+        gp_model,
+        gradient_boosting_regressor,
+        input_vars,
+        output_vars,
+        formulation=formulation,
+        **kwargs,
     )
 
 
@@ -72,10 +89,21 @@ class GradientBoostingRegressorConstr(SKgetter, AbstractPredictorConstr):
     |ClassShort|
     """
 
-    def __init__(self, gp_model, predictor, input_vars, output_vars, **kwargs):
+    def __init__(
+        self,
+        gp_model,
+        predictor,
+        input_vars,
+        output_vars,
+        formulation="leaf",
+        safety_floor=0.0,
+        **kwargs,
+    ):
         self._output_shape = 1
         self.estimators_ = []
         self._default_name = "gbtree_reg"
+        self.formulation = formulation
+        self.safety_floor = safety_floor
         SKgetter.__init__(self, predictor, input_vars)
         AbstractPredictorConstr.__init__(
             self, gp_model, input_vars, output_vars, **kwargs
@@ -98,6 +126,41 @@ class GradientBoostingRegressorConstr(SKgetter, AbstractPredictorConstr):
         assert outdim == 1, (
             "Output dimension of gradient boosting regressor should be 1"
         )
+
+        if self.formulation == "misic":
+            trees = []
+            for i in range(predictor.n_estimators_):
+                tree = predictor.estimators_[i][0].tree_
+                trees.append(
+                    {
+                        "capacity": tree.node_count,
+                        "children_left": tree.children_left,
+                        "children_right": tree.children_right,
+                        "feature": tree.feature,
+                        "threshold": tree.threshold,
+                        "value": tree.value[:, 0, :],
+                        "n_features": predictor.n_features_in_,
+                    }
+                )
+            sum_trees = model.addMVar(
+                output.shape, lb=-GRB.INFINITY, name=self._name_var("sum_trees")
+            )
+            self.estimators_ = [
+                MisicTreeEnsemble(
+                    model,
+                    trees,
+                    _input,
+                    sum_trees,
+                    safety_floor=self.safety_floor,
+                    predictor=predictor,
+                    **kwargs,
+                )
+            ]
+            constant = predictor.init_.constant_
+            model.addConstr(
+                output == predictor.learning_rate * sum_trees + constant[0][0]
+            )
+            return
 
         estimators = []
         if self._no_debug:
