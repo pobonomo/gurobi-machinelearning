@@ -22,6 +22,7 @@ from gurobipy import GRB
 
 from ..modeling import AbstractPredictorConstr
 from ..modeling.tree_ensemble.misic import MisicTreeEnsemble
+from ..modeling.tree_ensemble.vidal import VidalTreeEnsemble
 from .decision_tree_regressor import add_decision_tree_regressor_constr
 from .skgetter import SKgetter
 
@@ -121,7 +122,7 @@ class RandomForestRegressorConstr(SKgetter, AbstractPredictorConstr):
         output = self._output
         nex = _input.shape[0]
 
-        if self.formulation == "misic":
+        if self.formulation in ("misic", "vidal"):
             trees = []
             for i in range(predictor.n_estimators):
                 tree = predictor.estimators_[i].tree_
@@ -132,15 +133,18 @@ class RandomForestRegressorConstr(SKgetter, AbstractPredictorConstr):
                         "children_right": tree.children_right,
                         "feature": tree.feature,
                         "threshold": tree.threshold,
-                        "value": tree.value[:, 0, :],
+                        "value": tree.value[:, :, 0],
                         "n_features": predictor.n_features_in_,
                     }
                 )
             sum_trees = model.addMVar(
                 output.shape, lb=-GRB.INFINITY, name=self._name_var("sum_trees")
             )
+            EnsembleClass = (
+                VidalTreeEnsemble if self.formulation == "vidal" else MisicTreeEnsemble
+            )
             self.estimators_ = [
-                MisicTreeEnsemble(
+                EnsembleClass(
                     model,
                     trees,
                     _input,

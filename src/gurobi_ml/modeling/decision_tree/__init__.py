@@ -15,3 +15,4 @@
 
 from .decision_tree_model import AbstractTreeEstimator as AbstractTreeEstimator
 from ..tree_ensemble.misic import MisicTreeEnsemble as MisicTreeEnsemble
+from ..tree_ensemble.vidal import VidalTreeEnsemble as VidalTreeEnsemble

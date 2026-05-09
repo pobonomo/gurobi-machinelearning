@@ -25,6 +25,7 @@ from ..exceptions import NoSolutionError
 from ..modeling import AbstractPredictorConstr
 from ..modeling.decision_tree import AbstractTreeEstimator
 from ..modeling.tree_ensemble.misic import MisicTreeEnsemble
+from ..modeling.tree_ensemble.vidal import VidalTreeEnsemble
 
 
 def add_lgbmregressor_constr(
@@ -58,7 +59,7 @@ def add_lgbmregressor_constr(
     epsilon : float, optional
         A small value to distinguish between <= and > splits.
     formulation : str, optional
-        The formulation to use. One of "leaf" or "misic". Default is "leaf".
+        The formulation to use. One of "leaf", "misic", or "vidal". Default is "leaf".
     safety_floor : float, optional
         Thresholds with absolute value smaller than this will be clamped
         to this value to avoid numerical issues with Gurobi's tolerance.
@@ -124,7 +125,7 @@ def add_lgbm_booster_constr(
     epsilon : float, optional
         A small value to distinguish between <= and > splits.
     formulation : str, optional
-        The formulation to use. One of "leaf" or "misic". Default is "leaf".
+        The formulation to use. One of "leaf", "misic", or "vidal". Default is "leaf".
     safety_floor : float, optional
         Thresholds with absolute value smaller than this will be clamped
         to this value to avoid numerical issues with Gurobi's tolerance.
@@ -297,14 +298,18 @@ class LGBMConstr(AbstractPredictorConstr):
 
         trees_raw = lgbm_raw["tree_info"]
 
-        if self.formulation == "misic":
+        if self.formulation in ("misic", "vidal"):
             trees = []
             for tree_raw in trees_raw:
                 flat_tree = self._flat_tree_representation(tree_raw["tree_structure"])
                 flat_tree["n_features"] = lgbm_raw["max_feature_idx"] + 1
                 trees.append(flat_tree)
+            
+            EnsembleClass = (
+                VidalTreeEnsemble if self.formulation == "vidal" else MisicTreeEnsemble
+            )
             self.estimators_ = [
-                MisicTreeEnsemble(
+                EnsembleClass(
                     model,
                     trees,
                     _input,

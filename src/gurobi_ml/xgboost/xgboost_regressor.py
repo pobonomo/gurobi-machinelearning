@@ -36,6 +36,7 @@ from ..exceptions import ModelConfigurationError, NoSolutionError
 from ..modeling import AbstractPredictorConstr
 from ..modeling.decision_tree import AbstractTreeEstimator
 from ..modeling.tree_ensemble.misic import MisicTreeEnsemble
+from ..modeling.tree_ensemble.vidal import VidalTreeEnsemble
 
 
 def add_xgbregressor_constr(
@@ -226,7 +227,7 @@ class XGBoostRegressorConstr(AbstractPredictorConstr):
             )
         trees = xgb_raw["learner"]["gradient_booster"]["model"]["trees"]
 
-        if self.formulation == "misic":
+        if self.formulation in ("misic", "vidal"):
             misic_trees = []
             for i, tree in enumerate(trees):
                 tree["threshold"] = (
@@ -243,8 +244,11 @@ class XGBoostRegressorConstr(AbstractPredictorConstr):
             sum_trees = model.addMVar(
                 output.shape, lb=-GRB.INFINITY, name=self._name_var("sum_trees")
             )
+            EnsembleClass = (
+                VidalTreeEnsemble if self.formulation == "vidal" else MisicTreeEnsemble
+            )
             self.estimators_ = [
-                MisicTreeEnsemble(
+                EnsembleClass(
                     model,
                     misic_trees,
                     _input,
@@ -313,13 +317,18 @@ class XGBoostRegressorConstr(AbstractPredictorConstr):
         for i, tree in enumerate(trees):
             if self.verbose:
                 self._timer.timing(f"Estimator {i}")
-            tree["threshold"] = (
-                np.array(tree["split_conditions"], dtype=np.float32) - self.epsilon
-            )
-            tree["children_left"] = np.array(tree["left_children"])
+            raw_vals = np.array(tree["split_conditions"], dtype=np.float32)
+            children_left = np.array(tree["left_children"])
+            is_leaf = children_left < 0
+            
+            mip_thresholds = raw_vals.copy()
+            mip_thresholds[~is_leaf] -= self.epsilon
+            
+            tree["threshold"] = mip_thresholds
+            tree["children_left"] = children_left
             tree["children_right"] = np.array(tree["right_children"])
             tree["feature"] = np.array(tree["split_indices"])
-            tree["value"] = tree["threshold"].reshape(-1, 1)
+            tree["value"] = raw_vals.reshape(-1, 1)
             tree["capacity"] = len(tree["split_conditions"])
             tree["n_features"] = int(tree["tree_param"]["num_feature"])
 

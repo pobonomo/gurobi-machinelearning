@@ -115,7 +115,11 @@ class FixedRegressionModel(unittest.TestCase):
 
         predictor = one_case["predictor"]
         with super().subTest(
-            regressor=predictor, exampleno=choice, n_sample=n_sample, combine=combine
+            regressor=predictor,
+            exampleno=choice,
+            n_sample=n_sample,
+            combine=combine,
+            **kwargs,
         ):
             if VERBOSE:
                 print(f"Doing {predictor} with example {choice}")

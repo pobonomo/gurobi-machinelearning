@@ -94,30 +94,46 @@ the form :math:`x_{i_v} \le \theta_v` corresponding to the left branches leading
 :math:`l` and a set :math:`\mathcal R_l` of inequalities of
 the form :math:`x_{i_v} > \theta_v` corresponding to the right branches.
 
-We formulate decision trees by introducing one binary decision variable
-:math:`\delta_l` for each leaf of the tree (and each input vector).
+We currently support three different formulations for tree ensembles (Random
+Forests and Gradient Boosting):
 
-We introduce the constraint
+Leaf-based Formulation
+----------------------
 
-.. math::
-   \sum_{l} \delta_l = 1,
+This is the default formulation (``formulation="leaf"``).
+It introduces one binary decision variable :math:`\delta_l` for each leaf of
+the tree. We then use indicator constraints to link these variables to the
+input features. For more details on the implementation see
+:cite:p:`Strong-mixed-integer-programming-formulations-for-trained-FULL`.
 
-imposing that at least one leaf is chosen.
+Mišić (2020) Formulation
+------------------------
 
-Then for each leaf, the inequalities describing :math:`\mathcal L_l` and :math:`\mathcal R_l`
-are imposed using indicator constraints:
+This formulation (``formulation="misic"``) uses split-indicator binary
+variables shared across all trees in the ensemble. For each unique threshold
+:math:`\theta_{i,k}` on feature :math:`i`, a binary variable :math:`z_{i,k}`
+is introduced such that :math:`z_{i,k} = 1` if and only if :math:`x_i \le \theta_{i,k}`.
+This formulation can be more efficient than the leaf-based one by reducing
+the number of binary variables when many trees share splits.
+See :cite:p:`Misic2020` for details.
 
-.. math::
-   :nowrap:
+Vidal (2021) Flow-based Formulation
+-----------------------------------
 
-   \begin{align*}
-   & \delta_l = 1 \rightarrow x_{i_v} \le \theta_v, & & \text{for } x_{i_v} \le \theta_v \in \mathcal L_l,\\
-   & \delta_l = 1 \rightarrow x_{i_v} \ge \theta_v + \epsilon, & & \text{for } x_{i_v} > \theta_v \in \mathcal R_l.
-   \end{align*}
+This formulation (``formulation="vidal"``) models each tree as a network flow
+problem. It uses continuous flow variables for each node and edge, and links
+them to the shared split-indicator binary variables. It is often much more
+efficient than the other formulations because it provides a significantly
+tighter linear programming relaxation.
+See :cite:p:`ParmentierVidal2021` for details.
 
-A difficulty here is that the strictly greater than constraints of :math:`\mathcal R_l`
-can't be represented exactly in a mixed integer optimization model. To
-approximate it, we introduce a small threshold :math:`\epsilon`. We discuss
+Numerical Stability and Epsilon
+-------------------------------
+
+A difficulty with all tree-based formulations is that strictly greater than
+constraints can't be represented exactly. To approximate it, we introduce a
+small threshold :math:`\epsilon`.
+ We discuss
 below the trade-offs for choosing a value for :math:`\epsilon`.
 
 In our implementation, :math:`\epsilon` can be specified by a keyword parameter
@@ -154,8 +170,8 @@ Gradient Boosting Regression
 ============================
 
 The gradient boosting regressor is a linear combination of decision trees. Each
-decision tree is represented using the model above. The same difficulties with
-the choice of :math:`\epsilon` apply to this case.
+decision tree can be represented using any of the formulations described
+above. The same difficulties with the choice of :math:`\epsilon` apply to this case.
 
 We note additionally that the gradient boosting regressors are often very large
 and generating their representation in Gurobi may take a significant amount of
