@@ -114,7 +114,7 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
         n_splits_per_feat = np.array([len(s) for s in sorted_thresholds])
         total_splits = np.sum(n_splits_per_feat)
         split_offsets = np.cumsum(np.concatenate(([0], n_splits_per_feat)))
-        
+
         # Build a fast mapping for thresholds
         threshold_to_idx = [
             {val: k for k, val in enumerate(thresholds)}
@@ -145,7 +145,7 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
             thresholds = sorted_thresholds[j]
             if not thresholds:
                 continue
-            
+
             off = split_offsets[j]
             z_j = z_vars[:, off : off + len(thresholds)]
             x_j = _input[:, j]
@@ -156,10 +156,14 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
 
             if np.all(lb_j > -GRB.INFINITY) and np.all(ub_j < GRB.INFINITY):
                 model.addConstr(
-                    x_j[:, np.newaxis] <= vals + (ub_j[:, np.newaxis] - vals) * (1 - z_j)
+                    x_j[:, np.newaxis]
+                    <= vals + (ub_j[:, np.newaxis] - vals) * (1 - z_j)
                 )
                 model.addConstr(
-                    x_j[:, np.newaxis] >= vals + self.epsilon - (vals + self.epsilon - lb_j[:, np.newaxis]) * z_j
+                    x_j[:, np.newaxis]
+                    >= vals
+                    + self.epsilon
+                    - (vals + self.epsilon - lb_j[:, np.newaxis]) * z_j
                 )
             else:
                 for k, val in enumerate(thresholds):
@@ -176,9 +180,41 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
         total_nodes = np.sum(tree_node_counts)
         node_offsets = np.cumsum(np.concatenate(([0], tree_node_counts)))
 
-        y_node = model.addMVar(
-            (nex, total_nodes), lb=0.0, ub=1.0, name=""
-        )
+        y_node = model.addMVar((nex, total_nodes), lb=0.0, ub=1.0, name="")
+
+        # Reachability pruning: set flow to 0 if node is unreachable based on input bounds
+        from ..decision_tree.decision_tree_model import _compute_leafs_bounds
+
+        feature_is_fixed = (_input.lb == _input.ub).all(axis=0)
+        input_lb = _input.getAttr(GRB.Attr.LB)
+        input_ub = _input.getAttr(GRB.Attr.UB)
+
+        for t, tree in enumerate(self.trees):
+            off = node_offsets[t]
+            node_lb, node_ub = _compute_leafs_bounds(
+                tree, feature_is_fixed, self.epsilon
+            )
+
+            # node_lb shape: (n_features, node_count)
+            # input_ub shape: (nex, n_features)
+            # reachable if: for all features, input_ub >= node_lb and input_lb <= node_ub
+
+            # Vectorized reachability check for this tree
+            # We want (nex, node_count) boolean mask
+            # For each node k: reachable[i, k] = all(input_ub[i, f] >= node_lb[f, k] and input_lb[i, f] <= node_ub[f, k])
+
+            # Using numpy broadcasting:
+            # input_ub[:, :, np.newaxis] is (nex, n_features, 1)
+            # node_lb[np.newaxis, :, :] is (1, n_features, node_count)
+            is_reachable = np.all(
+                (input_ub[:, :, np.newaxis] >= node_lb[np.newaxis, :, :])
+                & (input_lb[:, :, np.newaxis] <= node_ub[np.newaxis, :, :]),
+                axis=1,
+            )
+
+            # Set UB to 0 for unreachable nodes
+            y_node_tree = y_node[:, off : off + tree["capacity"]]
+            y_node_tree[~is_reachable].setAttr(GRB.Attr.UB, 0.0)
 
         # Root flow = 1
         model.addConstr(y_node[:, node_offsets[:-1]] == 1.0)
@@ -188,33 +224,41 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
         all_children_right = np.concatenate([t["children_right"] for t in self.trees])
         all_features = np.concatenate([t["feature"] for t in self.trees])
         all_thresholds = np.concatenate([t["threshold"] for t in self.trees])
-        
+
         # Adjust thresholds for safety floor
-        mask = (np.abs(all_thresholds) > 0) & (np.abs(all_thresholds) < self.safety_floor)
+        mask = (np.abs(all_thresholds) > 0) & (
+            np.abs(all_thresholds) < self.safety_floor
+        )
         all_thresholds[mask] = np.sign(all_thresholds[mask]) * self.safety_floor
-        
+
         is_internal = all_children_left >= 0
         internal_indices = np.where(is_internal)[0]
-        
+
         if len(internal_indices) > 0:
             # Tree-specific offsets for nodes
             tree_ids = np.repeat(np.arange(len(self.trees)), tree_node_counts)
             node_offsets_expanded = node_offsets[tree_ids]
-            
+
             all_internal = internal_indices
-            all_lefts = all_children_left[internal_indices] + node_offsets_expanded[internal_indices]
-            all_rights = all_children_right[internal_indices] + node_offsets_expanded[internal_indices]
-            
+            all_lefts = (
+                all_children_left[internal_indices]
+                + node_offsets_expanded[internal_indices]
+            )
+            all_rights = (
+                all_children_right[internal_indices]
+                + node_offsets_expanded[internal_indices]
+            )
+
             # Map features and thresholds to shared binary indices
             feats = all_features[internal_indices]
             threshs = all_thresholds[internal_indices]
-            
-            # This part still needs a loop or a smarter map if possible, 
+
+            # This part still needs a loop or a smarter map if possible,
             # but it's only over total splits which is manageable.
             all_z_indices = np.zeros(len(internal_indices), dtype=int)
             for i, (f, v) in enumerate(zip(feats, threshs)):
                 all_z_indices[i] = split_offsets[f] + threshold_to_idx[f][v]
-            
+
             # Flow conservation: y_u = y_l + y_r
             model.addConstr(
                 y_node[:, all_internal] == y_node[:, all_lefts] + y_node[:, all_rights]
@@ -227,10 +271,10 @@ class VidalTreeEnsemble(AbstractPredictorConstr):
         # 5. Output calculation (Vectorized across trees)
         is_leaf = all_children_left < 0
         leaf_indices = np.where(is_leaf)[0]
-        
-        # We can't easily vectorize the whole sum if leaf values are different 
+
+        # We can't easily vectorize the whole sum if leaf values are different
         # shapes but here they should be consistent.
-        # Actually, let's keep the per-tree loop for the final output sum 
+        # Actually, let's keep the per-tree loop for the final output sum
         # to handle potential multi-output or different tree values.
         tree_outputs = []
         for t, tree in enumerate(self.trees):
