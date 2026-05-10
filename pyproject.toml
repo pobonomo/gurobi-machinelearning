@@ -34,3 +34,6 @@ Documentation = "https://gurobi-optimization-gurobi-machine-learning.readthedocs
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project.scripts]
+gurobi-ml-benchmarks = "gurobi_ml.benchmarks.main:main"
